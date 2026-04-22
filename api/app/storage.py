@@ -43,9 +43,13 @@ class MeetingStore:
     def audio_dir(self, meeting_id: str) -> Path:
         return self.meeting_dir(meeting_id) / "audio"
 
+    def audio_backup_dir(self, meeting_id: str) -> Path:
+        return self.meeting_dir(meeting_id) / "audio_backup"
+
     def _ensure_layout(self, meeting_id: str) -> None:
         root = self.meeting_dir(meeting_id)
         (root / "audio").mkdir(parents=True, exist_ok=True)
+        (root / "audio_backup").mkdir(parents=True, exist_ok=True)
         (root / "intermediate").mkdir(parents=True, exist_ok=True)
         (root / "output").mkdir(parents=True, exist_ok=True)
         (root / "logs").mkdir(parents=True, exist_ok=True)
@@ -72,7 +76,9 @@ class MeetingStore:
             "created_at": now,
             "updated_at": now,
             "audio_filename": None,
+            "audio_backup_filename": None,
             "audio_size_bytes": 0,
+            "audio_sha256": None,
         }
         self._write_json(self.metadata_path(meeting_id), metadata)
         return metadata
@@ -116,11 +122,33 @@ class MeetingStore:
         safe_name = Path(filename).name or "recording.webm"
         return self.audio_dir(meeting_id) / safe_name
 
-    def mark_recording_finished(self, meeting_id: str, filename: str, audio_size_bytes: int) -> dict[str, Any]:
+    def recording_backup_path(self, meeting_id: str, filename: str) -> Path:
+        self._ensure_layout(meeting_id)
+        safe_name = Path(filename).name or "recording.webm"
+        stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
+        unique_name = f"{stamp}-{uuid.uuid4().hex[:8]}-{safe_name}"
+        return self.audio_backup_dir(meeting_id) / unique_name
+
+    def temp_recording_path(self, meeting_id: str, *, backup: bool = False) -> Path:
+        base_dir = self.audio_backup_dir(meeting_id) if backup else self.audio_dir(meeting_id)
+        self._ensure_layout(meeting_id)
+        return base_dir / f".upload-{uuid.uuid4().hex}.tmp"
+
+    def mark_recording_finished(
+        self,
+        meeting_id: str,
+        filename: str,
+        audio_size_bytes: int,
+        *,
+        backup_filename: str,
+        audio_sha256: str,
+    ) -> dict[str, Any]:
         metadata = self.load_metadata(meeting_id)
         metadata["status"] = "recorded"
         metadata["audio_filename"] = filename
+        metadata["audio_backup_filename"] = backup_filename
         metadata["audio_size_bytes"] = audio_size_bytes
+        metadata["audio_sha256"] = audio_sha256
         return self.save_metadata(meeting_id, metadata)
 
     def resolve_audio_file(self, meeting_id: str) -> Path:
@@ -130,10 +158,22 @@ class MeetingStore:
             path = self.audio_dir(meeting_id) / filename
             if path.exists():
                 return path
+
+        backup_filename = metadata.get("audio_backup_filename")
+        if backup_filename:
+            backup_path = self.audio_backup_dir(meeting_id) / backup_filename
+            if backup_path.exists():
+                return backup_path
+
         files = sorted(self.audio_dir(meeting_id).glob("*"))
-        if not files:
-            raise FileNotFoundError("recording file is missing")
-        return files[0]
+        if files:
+            return files[0]
+
+        backup_files = sorted(self.audio_backup_dir(meeting_id).glob("*"))
+        if backup_files:
+            return backup_files[0]
+
+        raise FileNotFoundError("recording file is missing")
 
     def save_transcript_segments(self, meeting_id: str, segments: list[dict[str, Any]]) -> None:
         path = self.transcript_path(meeting_id)
@@ -199,11 +239,15 @@ class MeetingStore:
                 continue
 
             audio_dir = self.audio_dir(meeting_id)
+            audio_backup_dir = self.audio_backup_dir(meeting_id)
             intermediate_dir = self.meeting_dir(meeting_id) / "intermediate"
             if audio_dir.exists():
                 shutil.rmtree(audio_dir)
                 audio_dir.mkdir(parents=True, exist_ok=True)
                 removed += 1
+            if audio_backup_dir.exists():
+                shutil.rmtree(audio_backup_dir)
+                audio_backup_dir.mkdir(parents=True, exist_ok=True)
             if intermediate_dir.exists():
                 shutil.rmtree(intermediate_dir)
                 intermediate_dir.mkdir(parents=True, exist_ok=True)

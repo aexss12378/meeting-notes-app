@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,28 +141,47 @@ async def finish_recording(meeting_id: str, file: UploadFile = File(...)) -> dic
 
     filename = Path(file.filename or "recording.webm").name
     destination = store.recording_path(meeting_id, filename)
+    backup_destination = store.recording_backup_path(meeting_id, filename)
+    temp_destination = store.temp_recording_path(meeting_id)
+    temp_backup_destination = store.temp_recording_path(meeting_id, backup=True)
 
     bytes_limit = settings.max_upload_size_mb * 1024 * 1024
     total_size = 0
+    sha256 = hashlib.sha256()
 
-    with destination.open("wb") as output:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total_size += len(chunk)
-            if total_size > bytes_limit:
-                output.close()
-                destination.unlink(missing_ok=True)
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"recording too large (limit: {settings.max_upload_size_mb} MB)",
-                )
-            output.write(chunk)
+    try:
+        with temp_destination.open("wb") as output, temp_backup_destination.open("wb") as backup_output:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > bytes_limit:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"recording too large (limit: {settings.max_upload_size_mb} MB)",
+                    )
+                sha256.update(chunk)
+                output.write(chunk)
+                backup_output.write(chunk)
+    except Exception:
+        temp_destination.unlink(missing_ok=True)
+        temp_backup_destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
 
-    await file.close()
+    destination.unlink(missing_ok=True)
+    temp_destination.replace(destination)
+    temp_backup_destination.replace(backup_destination)
 
-    metadata = store.mark_recording_finished(meeting_id, filename, total_size)
+    metadata = store.mark_recording_finished(
+        meeting_id,
+        filename,
+        total_size,
+        backup_filename=backup_destination.name,
+        audio_sha256=sha256.hexdigest(),
+    )
     return {
         "meeting_id": meeting_id,
         "status": metadata["status"],
