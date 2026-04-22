@@ -29,17 +29,11 @@ The frontend only shows the final summary and TODO list. Internal transcript and
 
 ```mermaid
 flowchart TD
-    A["Browser: mic + system audio recording"] --> B["POST /api/v1/meetings"]
-    B --> C["POST /recording/start"]
-    C --> D["Stop recording in browser"]
-    D --> E["POST /recording/finish<br/>Upload full audio file"]
-    E --> F["POST /process"]
-    F --> G["Worker job"]
-    G --> H["Local ASR<br/>faster-whisper"]
-    H --> I["Remote summary + TODO<br/>Ollama-compatible endpoint"]
-    I --> J["Save internal transcript<br/>and output JSON files"]
-    J --> K["Frontend polls job status"]
-    K --> L["Show summary and TODO only"]
+    A["Browser recording"] --> B["Upload final audio"]
+    B --> C["Background job"]
+    C --> D["Local ASR<br/>faster-whisper"]
+    D --> E["Remote summary + TODO<br/>Ollama-compatible endpoint"]
+    E --> F["Frontend shows result"]
 ```
 
 ## Current Scope
