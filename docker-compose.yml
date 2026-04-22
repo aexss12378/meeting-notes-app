@@ -1,0 +1,90 @@
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: meeting-web
+    environment:
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-http://localhost:8000}
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+    command: >
+      sh -c "npm run dev -- --hostname 0.0.0.0 --port 3000"
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: meeting-api
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:3000}
+      DATA_DIR: ${DATA_DIR:-/data/meetings}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      TRANSCRIBE_LANGUAGE: ${TRANSCRIBE_LANGUAGE:-zh}
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-4}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
+      SUMMARY_CHUNK_CHARS: ${SUMMARY_CHUNK_CHARS:-6000}
+    volumes:
+      - ./api:/app
+      - ./data:/data
+      - whisper_cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_started
+    command: >
+      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: meeting-worker
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATA_DIR: ${DATA_DIR:-/data/meetings}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+      TRANSCRIBE_LANGUAGE: ${TRANSCRIBE_LANGUAGE:-zh}
+      WHISPER_MODEL_SIZE: ${WHISPER_MODEL_SIZE:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-4}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
+      SUMMARY_CHUNK_CHARS: ${SUMMARY_CHUNK_CHARS:-6000}
+    volumes:
+      - ./api:/app
+      - ./data:/data
+      - whisper_cache:/root/.cache/huggingface
+    depends_on:
+      redis:
+        condition: service_started
+    command: >
+      sh -c "python -m app.worker"
+
+  redis:
+    image: redis:7-alpine
+    container_name: meeting-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+volumes:
+  redisdata:
+  whisper_cache:
