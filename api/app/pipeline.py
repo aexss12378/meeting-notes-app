@@ -269,6 +269,27 @@ def _build_merge_prompt(parts: list[dict[str, Any]]) -> str:
     )
 
 
+def _ollama_transport_error_message(exc: Exception) -> str:
+    details = _format_error(exc)
+
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return (
+            "無法連線到遠端 Ollama 端點，請檢查 VPN 是否連線，"
+            f"或確認遠端服務是否可用。details={details}"
+        )
+
+    if isinstance(exc, httpx.ReadTimeout):
+        return f"遠端 Ollama 回應逾時，請檢查 VPN 穩定性或遠端服務負載。details={details}"
+
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return (
+            "遠端 Ollama 在回應前中斷連線，請檢查 VPN 穩定性，"
+            f"或確認遠端服務健康狀態。details={details}"
+        )
+
+    return f"ollama request failed: {details}"
+
+
 def _call_ollama_json(prompt: str, settings: Settings) -> dict[str, Any]:
     payload = {
         "model": settings.ollama_model,
@@ -281,12 +302,22 @@ def _call_ollama_json(prompt: str, settings: Settings) -> dict[str, Any]:
         with httpx.Client(timeout=float(settings.ollama_timeout_seconds)) as client:
             response = client.post(_ollama_chat_url(settings), json=payload)
     except Exception as exc:  # pragma: no cover - runtime dependency
-        raise PipelineError(f"ollama request failed: {_format_error(exc)}") from exc
+        raise PipelineError(_ollama_transport_error_message(exc)) from exc
 
     if response.status_code >= 400:
         details = response.text.strip()[:300]
+        if response.status_code in {502, 503, 504}:
+            raise PipelineError(
+                "遠端 Ollama 服務目前不可用，請檢查 VPN 連線或遠端服務狀態。"
+                f" status={response.status_code} model={settings.ollama_model} details={details}"
+            )
+        if response.status_code == 404:
+            raise PipelineError(
+                "遠端 Ollama 端點不存在，請檢查 OLLAMA_BASE_URL 設定是否正確。"
+                f" status={response.status_code} model={settings.ollama_model} details={details}"
+            )
         raise PipelineError(
-            f"ollama request failed ({response.status_code}) "
+            f"遠端 Ollama 請求失敗 ({response.status_code}) "
             f"model={settings.ollama_model} details={details}"
         )
 

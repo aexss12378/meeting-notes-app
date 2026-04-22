@@ -5,8 +5,9 @@ import traceback
 from datetime import datetime, timezone
 
 from app.config import get_settings
-from app.pipeline import run_pipeline
+from app.pipeline import summarize_and_extract_todos, transcribe_audio
 from app.queue import JobQueue
+from app.schemas import SummaryModel, TodoItem
 from app.storage import MeetingStore
 
 settings = get_settings()
@@ -19,25 +20,87 @@ def log(message: str) -> None:
     print(f"[{now}] {message}")
 
 
+def set_job_status_safe(
+    job_id: str,
+    *,
+    status: str,
+    progress: int,
+    message: str,
+    attempt: int,
+) -> None:
+    try:
+        queue.set_job_status(
+            job_id,
+            status=status,
+            progress=progress,
+            message=message,
+            attempt=attempt,
+        )
+    except Exception as exc:  # pragma: no cover - runtime path
+        log(f"Failed to update job status for {job_id}: {exc}")
+
+
+def mark_meeting_status_safe(meeting_id: str, status: str) -> None:
+    try:
+        store.mark_status(meeting_id, status)
+    except Exception as exc:  # pragma: no cover - runtime path
+        log(f"Failed to update meeting status for {meeting_id}: {exc}")
+
+
 def handle_job(job_id: str, meeting_id: str, attempt: int) -> None:
-    queue.set_job_status(job_id, status="running", progress=5, message="Preparing", attempt=attempt)
-    store.mark_status(meeting_id, "processing")
+    set_job_status_safe(
+        job_id,
+        status="running",
+        progress=5,
+        message="準備處理音檔",
+        attempt=attempt,
+    )
+    mark_meeting_status_safe(meeting_id, "processing")
 
     audio_path = store.resolve_audio_file(meeting_id)
 
-    queue.set_job_status(job_id, status="running", progress=35, message="Transcribing audio")
-    result = run_pipeline(audio_path, settings)
+    set_job_status_safe(
+        job_id,
+        status="running",
+        progress=35,
+        message="正在轉錄音檔",
+        attempt=attempt,
+    )
+    segments = transcribe_audio(audio_path, settings)
 
-    queue.set_job_status(job_id, status="running", progress=75, message="Writing outputs")
-    store.save_transcript_segments(meeting_id, result.transcript_segments)
+    set_job_status_safe(
+        job_id,
+        status="running",
+        progress=70,
+        message="正在向遠端模型產生摘要與 TODO",
+        attempt=attempt,
+    )
+    summary_raw, todos_raw = summarize_and_extract_todos(segments, settings)
+    summary = SummaryModel(**summary_raw)
+    todos = [TodoItem(**todo) for todo in todos_raw]
+
+    set_job_status_safe(
+        job_id,
+        status="running",
+        progress=90,
+        message="正在寫入結果",
+        attempt=attempt,
+    )
+    store.save_transcript_segments(meeting_id, segments)
     store.save_output(
         meeting_id,
-        result.summary.model_dump(),
-        [todo.model_dump() for todo in result.todos],
+        summary.model_dump(),
+        [todo.model_dump() for todo in todos],
     )
 
-    store.mark_status(meeting_id, "done")
-    queue.set_job_status(job_id, status="done", progress=100, message="Completed")
+    mark_meeting_status_safe(meeting_id, "done")
+    set_job_status_safe(
+        job_id,
+        status="done",
+        progress=100,
+        message="處理完成",
+        attempt=attempt,
+    )
 
 
 def run() -> None:
@@ -74,22 +137,33 @@ def run() -> None:
 
             if attempt < 1:
                 next_attempt = attempt + 1
-                queue.set_job_status(
+                set_job_status_safe(
                     job_id,
                     status="queued",
                     progress=0,
-                    message=f"Retrying after error: {exc}",
+                    message=f"處理失敗，準備重試：{exc}",
                     attempt=next_attempt,
                 )
-                queue.enqueue_existing(job_id=job_id, meeting_id=meeting_id, attempt=next_attempt)
+                try:
+                    queue.enqueue_existing(job_id=job_id, meeting_id=meeting_id, attempt=next_attempt)
+                except Exception as enqueue_exc:  # pragma: no cover - runtime path
+                    log(f"Failed to requeue job {job_id}: {enqueue_exc}")
+                    mark_meeting_status_safe(meeting_id, "error")
+                    set_job_status_safe(
+                        job_id,
+                        status="error",
+                        progress=100,
+                        message=f"重新排入佇列失敗：{enqueue_exc}",
+                        attempt=next_attempt,
+                    )
                 continue
 
-            store.mark_status(meeting_id, "error")
-            queue.set_job_status(
+            mark_meeting_status_safe(meeting_id, "error")
+            set_job_status_safe(
                 job_id,
                 status="error",
                 progress=100,
-                message=f"Failed after retry: {exc}",
+                message=f"處理失敗：{exc}",
                 attempt=attempt,
             )
 
