@@ -114,23 +114,15 @@ Notes:
 
 ## API
 
-### Meetings
-
-- `POST /api/v1/meetings`
-- `POST /api/v1/meetings/{meeting_id}/recording/start`
-- `POST /api/v1/meetings/{meeting_id}/recording/finish`
-- `POST /api/v1/meetings/{meeting_id}/process`
-- `GET /api/v1/meetings/{meeting_id}/result`
-
-### Jobs
-
-- `GET /api/v1/jobs/{job_id}`
-
-### Todos
-
-- `PATCH /api/v1/meetings/{meeting_id}/todos/{todo_id}`
-
-`POST /api/v1/meetings/{meeting_id}/recording/finish` uses `multipart/form-data` with field name `file`.
+| Area | Method | Path | Notes |
+| --- | --- | --- | --- |
+| Meetings | `POST` | `/api/v1/meetings` | Create a meeting and return `meeting_id` |
+| Meetings | `POST` | `/api/v1/meetings/{meeting_id}/recording/start` | Mark recording as started |
+| Meetings | `POST` | `/api/v1/meetings/{meeting_id}/recording/finish` | Upload final audio with `multipart/form-data`, field name `file` |
+| Meetings | `POST` | `/api/v1/meetings/{meeting_id}/process` | Enqueue background ASR and summarization job |
+| Meetings | `GET` | `/api/v1/meetings/{meeting_id}/result` | Return `summary` and `todos` for the meeting |
+| Jobs | `GET` | `/api/v1/jobs/{job_id}` | Poll background job status and progress |
+| Todos | `PATCH` | `/api/v1/meetings/{meeting_id}/todos/{todo_id}` | Update TODO text or completion state |
 
 ## Storage Layout
 
