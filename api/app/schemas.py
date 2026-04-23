@@ -11,6 +11,7 @@ class MeetingCreateRequest(BaseModel):
 
 class MeetingResponse(BaseModel):
     meeting_id: str
+    storage_key: str | None = None
     title: str
     language: str
     status: str
@@ -19,6 +20,7 @@ class MeetingResponse(BaseModel):
 
 class MeetingListItem(BaseModel):
     meeting_id: str
+    storage_key: str | None = None
     title: str
     language: str
     status: str

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,68 @@ def parse_dt(value: str) -> datetime:
 
 
 class MeetingStore:
+    AUDIO_EXTENSIONS = {".webm", ".wav", ".mp3", ".m4a", ".ogg", ".aac", ".flac"}
+
     def __init__(self, base_dir: str) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _slugify_title(title: str) -> str:
+        normalized = unicodedata.normalize("NFKC", title).strip().lower()
+        parts: list[str] = []
+        last_was_dash = False
+
+        for char in normalized:
+            if char.isalnum():
+                parts.append(char)
+                last_was_dash = False
+                continue
+
+            if not parts or last_was_dash:
+                continue
+
+            parts.append("-")
+            last_was_dash = True
+
+        slug = "".join(parts).strip("-")
+        return slug[:80] or "meeting"
+
+    def _build_storage_key(self, title: str, created_at: datetime) -> str:
+        stamp = created_at.strftime("%Y-%m-%d_%H-%M-%SZ")
+        slug = self._slugify_title(title)
+        base_name = f"{stamp}_{slug}"
+        candidate = base_name
+        suffix = 2
+
+        while (self.base_dir / candidate).exists():
+            candidate = f"{base_name}-{suffix}"
+            suffix += 1
+
+        return candidate
+
+    def _find_meeting_dir(self, meeting_id: str) -> Path | None:
+        legacy_dir = self.base_dir / meeting_id
+        if (legacy_dir / "metadata.json").exists():
+            return legacy_dir
+
+        for item in self.base_dir.iterdir():
+            if not item.is_dir():
+                continue
+            metadata_path = item / "metadata.json"
+            if not metadata_path.exists():
+                continue
+            try:
+                metadata = self._read_json(metadata_path)
+            except json.JSONDecodeError:
+                continue
+            if metadata.get("meeting_id") == meeting_id:
+                return item
+
+        return None
+
     def meeting_dir(self, meeting_id: str) -> Path:
-        return self.base_dir / meeting_id
+        return self._find_meeting_dir(meeting_id) or (self.base_dir / meeting_id)
 
     def metadata_path(self, meeting_id: str) -> Path:
         return self.meeting_dir(meeting_id) / "metadata.json"
@@ -38,7 +95,7 @@ class MeetingStore:
         return self.meeting_dir(meeting_id) / "output" / "todos.json"
 
     def transcript_path(self, meeting_id: str) -> Path:
-        return self.meeting_dir(meeting_id) / "intermediate" / "intermediate_transcript.jsonl"
+        return self.meeting_dir(meeting_id) / "intermediate" / "transcript.jsonl"
 
     def audio_dir(self, meeting_id: str) -> Path:
         return self.meeting_dir(meeting_id) / "audio"
@@ -46,13 +103,16 @@ class MeetingStore:
     def audio_backup_dir(self, meeting_id: str) -> Path:
         return self.meeting_dir(meeting_id) / "audio_backup"
 
-    def _ensure_layout(self, meeting_id: str) -> None:
-        root = self.meeting_dir(meeting_id)
+    @staticmethod
+    def _ensure_layout_at(root: Path) -> None:
         (root / "audio").mkdir(parents=True, exist_ok=True)
         (root / "audio_backup").mkdir(parents=True, exist_ok=True)
         (root / "intermediate").mkdir(parents=True, exist_ok=True)
         (root / "output").mkdir(parents=True, exist_ok=True)
         (root / "logs").mkdir(parents=True, exist_ok=True)
+
+    def _ensure_layout(self, meeting_id: str) -> None:
+        self._ensure_layout_at(self.meeting_dir(meeting_id))
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
@@ -66,10 +126,14 @@ class MeetingStore:
 
     def create_meeting(self, title: str, language: str) -> dict[str, Any]:
         meeting_id = str(uuid.uuid4())
-        self._ensure_layout(meeting_id)
-        now = utcnow_iso()
+        created_at = utcnow()
+        storage_key = self._build_storage_key(title, created_at)
+        root = self.base_dir / storage_key
+        self._ensure_layout_at(root)
+        now = created_at.isoformat()
         metadata = {
             "meeting_id": meeting_id,
+            "storage_key": storage_key,
             "title": title,
             "language": language,
             "status": "created",
@@ -80,11 +144,11 @@ class MeetingStore:
             "audio_size_bytes": 0,
             "audio_sha256": None,
         }
-        self._write_json(self.metadata_path(meeting_id), metadata)
+        self._write_json(root / "metadata.json", metadata)
         return metadata
 
     def exists(self, meeting_id: str) -> bool:
-        return self.metadata_path(meeting_id).exists()
+        return self._find_meeting_dir(meeting_id) is not None
 
     def load_metadata(self, meeting_id: str) -> dict[str, Any]:
         path = self.metadata_path(meeting_id)
@@ -119,15 +183,25 @@ class MeetingStore:
 
     def recording_path(self, meeting_id: str, filename: str) -> Path:
         self._ensure_layout(meeting_id)
-        safe_name = Path(filename).name or "recording.webm"
-        return self.audio_dir(meeting_id) / safe_name
+        suffix = Path(filename).suffix.lower()
+        if suffix not in self.AUDIO_EXTENSIONS:
+            suffix = ".webm"
+        return self.audio_dir(meeting_id) / f"original{suffix}"
 
     def recording_backup_path(self, meeting_id: str, filename: str) -> Path:
         self._ensure_layout(meeting_id)
-        safe_name = Path(filename).name or "recording.webm"
-        stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
-        unique_name = f"{stamp}-{uuid.uuid4().hex[:8]}-{safe_name}"
-        return self.audio_backup_dir(meeting_id) / unique_name
+        original_name = self.recording_path(meeting_id, filename).name
+        stamp = utcnow().strftime("%Y-%m-%d_%H-%M-%SZ")
+        candidate = self.audio_backup_dir(meeting_id) / f"{stamp}_{original_name}"
+        suffix = 2
+
+        while candidate.exists():
+            stem = Path(original_name).stem
+            extension = Path(original_name).suffix
+            candidate = self.audio_backup_dir(meeting_id) / f"{stamp}_{stem}-{suffix}{extension}"
+            suffix += 1
+
+        return candidate
 
     def temp_recording_path(self, meeting_id: str, *, backup: bool = False) -> Path:
         base_dir = self.audio_backup_dir(meeting_id) if backup else self.audio_dir(meeting_id)

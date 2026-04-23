@@ -128,15 +128,18 @@ Notes:
 
 Meeting data is stored under:
 
-`data/meetings/<meeting_id>/`
+`data/meetings/<timestamp>_<title-slug>/`
 
 Files:
 
 - `metadata.json`
-- `audio/*`
-- `intermediate/intermediate_transcript.jsonl`
+- `audio/original.webm`
+- `audio_backup/<timestamp>_original.webm`
+- `intermediate/transcript.jsonl`
 - `output/summary.json`
 - `output/todos.json`
+
+`meeting_id` remains a UUID in the API and metadata, but the folder name is now a readable `storage_key`.
 
 The frontend only reads `summary.json` and `todos.json` through the API.
 
