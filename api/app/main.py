@@ -139,9 +139,9 @@ def start_recording(meeting_id: str) -> dict:
 async def finish_recording(meeting_id: str, file: UploadFile = File(...)) -> dict:
     ensure_meeting_exists(meeting_id)
 
-    filename = Path(file.filename or "recording.webm").name
-    destination = store.recording_path(meeting_id, filename)
-    backup_destination = store.recording_backup_path(meeting_id, filename)
+    upload_name = Path(file.filename or "recording.webm").name
+    destination = store.recording_path(meeting_id, upload_name)
+    backup_destination = store.recording_backup_path(meeting_id, upload_name)
     temp_destination = store.temp_recording_path(meeting_id)
     temp_backup_destination = store.temp_recording_path(meeting_id, backup=True)
 
@@ -177,7 +177,7 @@ async def finish_recording(meeting_id: str, file: UploadFile = File(...)) -> dic
 
     metadata = store.mark_recording_finished(
         meeting_id,
-        filename,
+        destination.name,
         total_size,
         backup_filename=backup_destination.name,
         audio_sha256=sha256.hexdigest(),
@@ -185,7 +185,7 @@ async def finish_recording(meeting_id: str, file: UploadFile = File(...)) -> dic
     return {
         "meeting_id": meeting_id,
         "status": metadata["status"],
-        "audio_filename": filename,
+        "audio_filename": metadata["audio_filename"],
         "audio_size_bytes": total_size,
     }
 
