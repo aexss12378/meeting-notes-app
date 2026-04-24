@@ -1,14 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import HealthBar from "./components/HealthBar";
+import RecordingControls from "./components/RecordingControls";
+import MeetingList from "./components/MeetingList";
+import MeetingDetail from "./components/MeetingDetail";
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+const POLL_INITIAL_MS = 2000;
+const POLL_MAX_MS = 10000;
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    cache: "no-store",
-    ...options,
-  });
+  const response = await fetch(url, { cache: "no-store", ...options });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || `HTTP ${response.status}`);
@@ -17,48 +20,33 @@ async function fetchJson(url, options = {}) {
 }
 
 function toCaptureErrorMessage(error) {
-  if (!error) {
-    return "未知的錄音錯誤";
-  }
+  if (!error) return "未知的錄音錯誤";
 
   const name = error.name || "";
-  if (name === "NotAllowedError") {
-    return "你拒絕了權限，請允許麥克風與螢幕分享音訊後重試。";
-  }
-  if (name === "NotFoundError") {
-    return "找不到可用麥克風裝置。";
-  }
-  if (name === "AbortError") {
-    return "螢幕分享流程被中斷，請重新操作。";
-  }
-  if (name === "NotReadableError") {
-    return "音訊裝置目前不可讀取，請關閉其他占用程式後重試。";
-  }
-  if (name === "InvalidStateError") {
-    return "瀏覽器狀態不允許啟動錄音，請重新整理頁面後再試。";
-  }
-
+  if (name === "NotAllowedError") return "你拒絕了權限，請允許麥克風與螢幕分享音訊後重試。";
+  if (name === "NotFoundError") return "找不到可用麥克風裝置。";
+  if (name === "AbortError") return "螢幕分享流程被中斷，請重新操作。";
+  if (name === "NotReadableError") return "音訊裝置目前不可讀取，請關閉其他占用程式後重試。";
+  if (name === "InvalidStateError") return "瀏覽器狀態不允許啟動錄音，請重新整理頁面後再試。";
   return String(error);
 }
 
 function isChromiumBrowser() {
-  if (typeof navigator === "undefined") {
-    return false;
-  }
-  const ua = navigator.userAgent || "";
-  return /Chrome|Chromium|Edg\//.test(ua);
+  if (typeof navigator === "undefined") return false;
+  return /Chrome|Chromium|Edg\//.test(navigator.userAgent || "");
 }
 
 export default function HomePage() {
   const [health, setHealth] = useState({ status: "loading", detail: "Checking API..." });
   const [meetings, setMeetings] = useState([]);
   const [meetingTitle, setMeetingTitle] = useState("");
-
   const [currentMeetingId, setCurrentMeetingId] = useState(null);
   const [currentJobId, setCurrentJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState(null);
   const [uiError, setUiError] = useState("");
+  const [loadError, setLoadError] = useState(null);
   const [selectedMeetingId, setSelectedMeetingId] = useState(null);
   const [result, setResult] = useState(null);
 
@@ -70,7 +58,7 @@ export default function HomePage() {
   const chunksRef = useRef([]);
 
   const selectedMeeting = useMemo(
-    () => meetings.find((meeting) => meeting.meeting_id === selectedMeetingId) || null,
+    () => meetings.find((m) => m.meeting_id === selectedMeetingId) || null,
     [meetings, selectedMeetingId],
   );
 
@@ -85,60 +73,67 @@ export default function HomePage() {
     setResult(data);
   };
 
-  useEffect(() => {
-    const bootstrap = async () => {
-      try {
-        const ready = await fetchJson(`${apiBase}/health/ready`);
-        if (ready.status === "ok") {
-          setHealth({ status: "ok", detail: "API ready" });
-        } else {
-          setHealth({ status: "error", detail: "API degraded" });
-        }
-      } catch (error) {
-        setHealth({ status: "error", detail: `Cannot reach API (${String(error)})` });
-      }
-
-      try {
-        await refreshMeetings();
-      } catch (error) {
-        setUiError(`Cannot load meetings: ${String(error)}`);
-      }
-    };
-
-    bootstrap();
-  }, []);
-
-  useEffect(() => {
-    if (!currentJobId) {
-      return undefined;
+  // #5: retry mechanism — bootstrap can be re-invoked on failure
+  const bootstrap = async () => {
+    setLoadError(null);
+    try {
+      const ready = await fetchJson(`${apiBase}/health/ready`);
+      setHealth(ready.status === "ok" ? { status: "ok", detail: "API ready" } : { status: "error", detail: "API degraded" });
+    } catch (error) {
+      setHealth({ status: "error", detail: `Cannot reach API (${String(error)})` });
+      setLoadError("無法連線到 API，請確認服務是否已啟動。");
+      return;
     }
+    try {
+      await refreshMeetings();
+    } catch (error) {
+      setLoadError(`無法載入會議列表：${String(error)}`);
+    }
+  };
 
-    const timer = setInterval(async () => {
+  useEffect(() => { bootstrap(); }, []);
+
+  // #4: polling with exponential backoff
+  useEffect(() => {
+    if (!currentJobId) return undefined;
+
+    let cancelled = false;
+    let delay = POLL_INITIAL_MS;
+
+    const poll = async () => {
+      if (cancelled) return;
       try {
         const data = await fetchJson(`${apiBase}/api/v1/jobs/${currentJobId}`);
+        if (cancelled) return;
         setJobStatus(data);
 
         if (data.status === "done") {
-          clearInterval(timer);
           await refreshMeetings();
           await loadMeetingResult(data.meeting_id);
           setCurrentJobId(null);
+          setUploadPhase(null);
+          return;
         }
-
         if (data.status === "error") {
-          clearInterval(timer);
           setCurrentJobId(null);
+          setUploadPhase(null);
           setUiError(data.message || "Processing failed");
           await refreshMeetings();
+          return;
         }
+
+        delay = Math.min(delay * 2, POLL_MAX_MS);
+        setTimeout(poll, delay);
       } catch (error) {
-        clearInterval(timer);
+        if (cancelled) return;
         setCurrentJobId(null);
+        setUploadPhase(null);
         setUiError(`Job polling failed: ${String(error)}`);
       }
-    }, 2000);
+    };
 
-    return () => clearInterval(timer);
+    const timeoutId = setTimeout(poll, delay);
+    return () => { cancelled = true; clearTimeout(timeoutId); };
   }, [currentJobId]);
 
   const releaseRecorderResources = async () => {
@@ -148,45 +143,31 @@ export default function HomePage() {
       recorder.onstop = null;
       recorderRef.current = null;
     }
-
     if (displayStreamRef.current) {
-      displayStreamRef.current.getTracks().forEach((track) => {
-        track.onended = null;
-        track.stop();
-      });
+      displayStreamRef.current.getTracks().forEach((t) => { t.onended = null; t.stop(); });
       displayStreamRef.current = null;
     }
-
     if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
     }
-
     if (mixedStreamRef.current) {
-      mixedStreamRef.current.getTracks().forEach((track) => track.stop());
+      mixedStreamRef.current.getTracks().forEach((t) => t.stop());
       mixedStreamRef.current = null;
     }
-
     if (audioContextRef.current) {
-      try {
-        await audioContextRef.current.close();
-      } catch {
-        // ignore
-      }
+      try { await audioContextRef.current.close(); } catch { /* ignore */ }
       audioContextRef.current = null;
     }
-
     chunksRef.current = [];
     setIsRecording(false);
   };
 
-  useEffect(() => {
-    return () => {
-      releaseRecorderResources();
-    };
-  }, []);
+  useEffect(() => { return () => { releaseRecorderResources(); }; }, []);
 
+  // #6: upload progress phase
   const uploadAndProcess = async (meetingId, blob) => {
+    setUploadPhase("uploading");
     const formData = new FormData();
     formData.append("file", blob, "recording.webm");
 
@@ -195,26 +176,20 @@ export default function HomePage() {
       body: formData,
     });
 
+    setUploadPhase("processing");
     const processResponse = await fetchJson(`${apiBase}/api/v1/meetings/${meetingId}/process`, {
       method: "POST",
     });
 
-    setCurrentMeetingId(meetingId);
     setCurrentJobId(processResponse.job_id);
     setJobStatus({ status: "queued", progress: 0, message: "Queued" });
-
+    setUploadPhase(null);
     await refreshMeetings();
   };
 
   const stopRecording = () => {
     const recorder = recorderRef.current;
-    if (!recorder) {
-      return;
-    }
-
-    if (recorder.state !== "inactive") {
-      recorder.stop();
-    }
+    if (recorder && recorder.state !== "inactive") recorder.stop();
   };
 
   const prepareMixedStream = async () => {
@@ -223,46 +198,35 @@ export default function HomePage() {
     }
 
     const micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
+      audio: { echoCancellation: true, noiseSuppression: true },
     });
 
     let displayStream;
     try {
-      displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
+      displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     } catch (error) {
-      micStream.getTracks().forEach((track) => track.stop());
+      micStream.getTracks().forEach((t) => t.stop());
       throw error;
     }
 
     const displayAudioTracks = displayStream.getAudioTracks();
     if (!displayAudioTracks.length) {
-      displayStream.getTracks().forEach((track) => track.stop());
-      micStream.getTracks().forEach((track) => track.stop());
+      displayStream.getTracks().forEach((t) => t.stop());
+      micStream.getTracks().forEach((t) => t.stop());
       throw new Error("未偵測到系統音訊。請在分享視窗勾選「分享音訊」後重試。");
     }
 
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) {
-      displayStream.getTracks().forEach((track) => track.stop());
-      micStream.getTracks().forEach((track) => track.stop());
+      displayStream.getTracks().forEach((t) => t.stop());
+      micStream.getTracks().forEach((t) => t.stop());
       throw new Error("瀏覽器不支援音訊混音。請改用桌面 Chrome 或 Edge。");
     }
 
     const audioContext = new AudioContextClass();
     const destination = audioContext.createMediaStreamDestination();
-
-    const micSource = audioContext.createMediaStreamSource(micStream);
-    micSource.connect(destination);
-
-    const displayAudioOnlyStream = new MediaStream(displayAudioTracks);
-    const displaySource = audioContext.createMediaStreamSource(displayAudioOnlyStream);
-    displaySource.connect(destination);
+    audioContext.createMediaStreamSource(micStream).connect(destination);
+    audioContext.createMediaStreamSource(new MediaStream(displayAudioTracks)).connect(destination);
 
     micStreamRef.current = micStream;
     displayStreamRef.current = displayStream;
@@ -282,14 +246,13 @@ export default function HomePage() {
     return destination.stream;
   };
 
+  // #3: get permissions BEFORE creating meeting (avoids orphan meetings)
   const startRecording = async () => {
     setUiError("");
-
     if (!isChromiumBrowser()) {
       setUiError("請使用桌面 Chrome 或 Edge 進行麥克風 + 系統音訊錄製。");
       return;
     }
-
     const title = meetingTitle.trim();
     if (!title) {
       setUiError("請先輸入會議標題。");
@@ -297,13 +260,13 @@ export default function HomePage() {
     }
 
     try {
+      const mixedStream = await prepareMixedStream();
+
       const meeting = await fetchJson(`${apiBase}/api/v1/meetings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, language: "zh-TW" }),
       });
-
-      const mixedStream = await prepareMixedStream();
 
       await fetchJson(`${apiBase}/api/v1/meetings/${meeting.meeting_id}/recording/start`, {
         method: "POST",
@@ -319,10 +282,8 @@ export default function HomePage() {
       recorderRef.current = recorder;
       chunksRef.current = [];
 
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          chunksRef.current.push(event.data);
-        }
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
 
       recorder.onstop = async () => {
@@ -347,27 +308,19 @@ export default function HomePage() {
     }
   };
 
+  // #2: patchTodo no longer calls refreshMeetings
   const patchTodo = async (todoId, patch) => {
-    if (!selectedMeetingId) {
-      return;
-    }
+    if (!selectedMeetingId) return;
     try {
       const updated = await fetchJson(`${apiBase}/api/v1/meetings/${selectedMeetingId}/todos/${todoId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-
       setResult((prev) => {
-        if (!prev) {
-          return prev;
-        }
-        return {
-          ...prev,
-          todos: prev.todos.map((todo) => (todo.id === todoId ? updated : todo)),
-        };
+        if (!prev) return prev;
+        return { ...prev, todos: prev.todos.map((t) => (t.id === todoId ? updated : t)) };
       });
-      await refreshMeetings();
     } catch (error) {
       setUiError(`更新 TODO 失敗：${String(error)}`);
     }
@@ -379,112 +332,45 @@ export default function HomePage() {
         <h1>Meeting Notes (Post-Meeting)</h1>
         <p>錄音後才生成摘要與 TODO，不提供即時字幕。</p>
 
-        <div className={`health health-${health.status}`}>
-          <strong>API:</strong> {health.detail}
-        </div>
+        <HealthBar health={health} />
+
+        {loadError && (
+          <p className="error" role="alert" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            {loadError}
+            <button className="btn btn-primary" onClick={bootstrap} style={{ fontSize: "0.85rem" }}>
+              重試
+            </button>
+          </p>
+        )}
 
         <div className="capture-guide">
           需要同時授權「麥克風」與「分享音訊」。請使用桌面 Chrome/Edge，分享畫面時務必勾選音訊。
         </div>
 
-        <div className="controls">
-          <input
-            className="title-input"
-            placeholder="會議標題，例如：每週產品同步"
-            value={meetingTitle}
-            onChange={(event) => setMeetingTitle(event.target.value)}
-            disabled={isRecording}
-          />
-
-          <div className="row">
-            <button className="btn btn-primary" onClick={startRecording} disabled={isRecording || !!currentJobId}>
-              開始錄音
-            </button>
-            <button className="btn btn-danger" onClick={stopRecording} disabled={!isRecording}>
-              停止錄音
-            </button>
-          </div>
-
-          {isRecording && <p className="hint">錄音中（麥克風 + 系統音訊）... 停止後會自動上傳並開始處理。</p>}
-          {currentJobId && jobStatus && (
-            <p className="hint">
-              處理中 ({jobStatus.progress}%): {jobStatus.message || jobStatus.status}
-            </p>
-          )}
-          {uiError && <p className="error">{uiError}</p>}
-        </div>
+        <RecordingControls
+          isRecording={isRecording}
+          currentJobId={currentJobId}
+          jobStatus={jobStatus}
+          meetingTitle={meetingTitle}
+          uploadPhase={uploadPhase}
+          uiError={uiError}
+          onStart={startRecording}
+          onStop={stopRecording}
+          onTitleChange={setMeetingTitle}
+        />
       </section>
 
       <section className="card split">
-        <div>
-          <h2>會議列表</h2>
-          <ul className="meeting-list">
-            {meetings.map((meeting) => (
-              <li key={meeting.meeting_id}>
-                <button
-                  className={`meeting-item ${selectedMeetingId === meeting.meeting_id ? "active" : ""}`}
-                  onClick={() => loadMeetingResult(meeting.meeting_id)}
-                >
-                  <span className="meeting-title">{meeting.title}</span>
-                  <span className="meeting-meta">{meeting.status}</span>
-                </button>
-              </li>
-            ))}
-            {meetings.length === 0 && <li className="hint">目前還沒有會議。</li>}
-          </ul>
-        </div>
-
-        <div>
-          <h2>摘要與 TODO</h2>
-          {!selectedMeeting && <p className="hint">請先建立會議並完成錄音。</p>}
-
-          {selectedMeeting && !result && <p className="hint">讀取中...</p>}
-
-          {result && (
-            <>
-              <article className="summary">
-                <h3>Summary</h3>
-                <p>{result.summary?.overview || "尚未產生摘要"}</p>
-
-                <h4>Key Points</h4>
-                <ul>
-                  {(result.summary?.key_points || []).map((item, index) => (
-                    <li key={`kp-${index}`}>{item}</li>
-                  ))}
-                  {(result.summary?.key_points || []).length === 0 && <li>目前沒有重點。</li>}
-                </ul>
-              </article>
-
-              <article className="todos">
-                <h3>TODO</h3>
-                <ul>
-                  {(result.todos || []).map((todo) => (
-                    <li key={todo.id} className="todo-item">
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={!!todo.done}
-                          onChange={(event) => patchTodo(todo.id, { done: event.target.checked })}
-                        />
-                      </label>
-                      <input
-                        type="text"
-                        defaultValue={todo.text}
-                        onBlur={(event) => {
-                          const nextText = event.target.value.trim();
-                          if (nextText && nextText !== todo.text) {
-                            patchTodo(todo.id, { text: nextText });
-                          }
-                        }}
-                      />
-                    </li>
-                  ))}
-                  {(result.todos || []).length === 0 && <li>目前沒有待辦。</li>}
-                </ul>
-              </article>
-            </>
-          )}
-        </div>
+        <MeetingList
+          meetings={meetings}
+          selectedMeetingId={selectedMeetingId}
+          onSelect={loadMeetingResult}
+        />
+        <MeetingDetail
+          meeting={selectedMeeting}
+          result={result}
+          onPatchTodo={patchTodo}
+        />
       </section>
 
       {currentMeetingId && <p className="footer-note">目前會議 ID: {currentMeetingId}</p>}
