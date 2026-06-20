@@ -1,10 +1,8 @@
-"use client";
-
-import HealthBar from "@/components/HealthBar";
-import MeetingList from "@/components/MeetingList";
-import RecordingControls from "@/components/RecordingControls";
-import RecordingModeCards from "@/components/RecordingModeCards";
 import type { HealthStatus, JobStatus, Meeting, UploadPhase } from "@/types";
+import HealthBar from "./HealthBar";
+import MeetingList from "./MeetingList";
+import RecordingControls from "./RecordingControls";
+import RecordingModeCards from "./RecordingModeCards";
 
 type HomePanelProps = {
   health: HealthStatus;
@@ -19,7 +17,7 @@ type HomePanelProps = {
   uploadPhase: UploadPhase;
   uiError: string;
   onBootstrap: () => void;
-  onLoadMeetingResult: (meetingId: string) => void;
+  onLoadMeetingResult: (meetingId: string) => Promise<void>;
   onStartRecording: () => void;
   onStopRecording: () => void;
   onTitleChange: (title: string) => void;
@@ -32,7 +30,6 @@ export default function HomePanel({
   selectedMeetingId,
   isRecording,
   currentJobId,
-  currentMeetingId,
   jobStatus,
   meetingTitle,
   uploadPhase,
@@ -44,57 +41,95 @@ export default function HomePanel({
   onTitleChange,
 }: HomePanelProps) {
   const apiReady = health.status === "ok";
-  const summaryReady = !loadError && apiReady;
 
   return (
-    <>
-      <section className="rounded-xl border border-white/10 bg-[#24272f] p-5 shadow-2xl shadow-black/20">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-zinc-100">早安，開始新的會議記錄</h1>
-            <p className="mt-1 text-sm text-zinc-400">錄音後產生摘要與 TODO，不提供即時字幕。</p>
-          </div>
+    <div className="mx-auto max-w-5xl px-8 py-8">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold text-zinc-100">
+          早安，開始新的會議記錄
+        </h1>
+        <p className="mt-1 text-sm text-zinc-500">
+          錄音後產生摘要與 TODO，不提供即時字幕。
+        </p>
+      </header>
 
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className={`rounded-full border px-3 py-1 ${apiReady ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300" : "border-rose-400/30 bg-rose-500/10 text-rose-200"}`}>
+      <section className="mb-8">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-600">
+            音訊來源
+          </h2>
+          <div className="flex gap-2 text-xs">
+            <span
+              className={`rounded-full border px-3 py-1 ${
+                apiReady
+                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-rose-400/30 bg-rose-500/10 text-rose-200"
+              }`}
+            >
               API {apiReady ? "已連線" : "未連線"}
             </span>
-            <span className={`rounded-full border px-3 py-1 ${summaryReady ? "border-violet-400/30 bg-violet-500/10 text-violet-200" : "border-white/10 bg-white/[0.04] text-zinc-400"}`}>
-              摘要設定 {summaryReady ? "可用" : "待確認"}
+          </div>
+        </div>
+
+        <HealthBar health={health} />
+
+        {loadError && (
+          <div className="mt-3 flex items-center gap-3 rounded-lg border border-rose-400/20 bg-rose-500/5 px-4 py-3 text-sm text-rose-300">
+            <span>{loadError}</span>
+            <button
+              type="button"
+              onClick={onBootstrap}
+              className="ml-auto rounded-md bg-rose-500/20 px-3 py-1 text-xs font-medium text-rose-200 hover:bg-rose-500/30"
+            >
+              重試
+            </button>
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-[#181a21] p-4">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-white/[0.04]">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
+                  <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-zinc-100">系統音訊</p>
+                <p className="text-xs text-zinc-600">分享畫面時勾選音訊</p>
+              </div>
+            </div>
+            <span className="rounded-full bg-violet-500/20 px-3 py-1 text-xs font-medium text-violet-300">
+              需要授權
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-[#181a21] p-4">
+            <div className="flex items-center gap-3">
+              <div className="grid h-10 w-10 place-items-center rounded-lg bg-white/[0.04]">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-zinc-100">麥克風</p>
+                <p className="text-xs text-zinc-600">外接或內建輸入</p>
+              </div>
+            </div>
+            <span className="rounded-full border border-white/[0.06] px-3 py-1 text-xs text-zinc-400">
+              瀏覽器選擇
             </span>
           </div>
         </div>
+      </section>
 
-        <div className="mt-4">
-          <HealthBar health={health} />
-        </div>
+      <section className="mb-8">
+        <RecordingModeCards />
+      </section>
 
-        {loadError && (
-          <p className="error" role="alert" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            {loadError}
-            <button className="btn btn-primary whitespace-nowrap" onClick={onBootstrap} style={{ fontSize: "0.85rem" }}>
-              重試
-            </button>
-          </p>
-        )}
-
-        <div className="mt-5 grid gap-3 lg:grid-cols-2">
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-white/10 bg-[#1b1d23] p-4">
-            <div>
-              <p className="text-sm font-semibold text-zinc-100">系統音訊</p>
-              <p className="mt-1 text-xs text-zinc-500">分享畫面時勾選音訊</p>
-            </div>
-            <span className="rounded-full bg-violet-500 px-3 py-1 text-xs font-semibold text-white">需要授權</span>
-          </div>
-          <div className="flex items-center justify-between gap-4 rounded-xl border border-white/10 bg-[#1b1d23] p-4">
-            <div>
-              <p className="text-sm font-semibold text-zinc-100">麥克風</p>
-              <p className="mt-1 text-xs text-zinc-500">外接或內建輸入</p>
-            </div>
-            <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-300">瀏覽器選擇</span>
-          </div>
-        </div>
-
+      <section className="mb-8">
         <RecordingControls
           isRecording={isRecording}
           currentJobId={currentJobId}
@@ -106,15 +141,20 @@ export default function HomePanel({
           onStop={onStopRecording}
           onTitleChange={onTitleChange}
         />
-
-        <RecordingModeCards />
       </section>
 
-      <section className="rounded-xl border border-white/10 bg-[#24272f] p-5 shadow-xl shadow-black/10">
-        <MeetingList meetings={meetings} selectedMeetingId={selectedMeetingId} onSelect={onLoadMeetingResult} />
+      <section>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-600">
+            最近會議
+          </h2>
+        </div>
+        <MeetingList
+          meetings={meetings}
+          selectedMeetingId={selectedMeetingId}
+          onSelect={onLoadMeetingResult}
+        />
       </section>
-
-      {currentMeetingId && <p className="footer-note">目前會議 ID: {currentMeetingId}</p>}
-    </>
+    </div>
   );
 }
