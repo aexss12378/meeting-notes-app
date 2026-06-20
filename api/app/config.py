@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     whisper_cpu_threads: int = 4
     ollama_base_url: str = ""
     ollama_model: str = "qwen3:14b"
+    ollama_api_key: str = ""
     ollama_timeout_seconds: int = 180
     summary_chunk_chars: int = 6000
 

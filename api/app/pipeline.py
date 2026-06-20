@@ -297,10 +297,13 @@ def _call_ollama_json(prompt: str, settings: Settings) -> dict[str, Any]:
         "stream": False,
         "format": "json",
     }
+    headers = {}
+    if settings.ollama_api_key.strip():
+        headers["Authorization"] = f"Bearer {settings.ollama_api_key.strip()}"
 
     try:
         with httpx.Client(timeout=float(settings.ollama_timeout_seconds)) as client:
-            response = client.post(_ollama_chat_url(settings), json=payload)
+            response = client.post(_ollama_chat_url(settings), json=payload, headers=headers)
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise PipelineError(_ollama_transport_error_message(exc)) from exc
 

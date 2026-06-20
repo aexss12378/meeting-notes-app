@@ -47,7 +47,14 @@ def mark_meeting_status_safe(meeting_id: str, status: str) -> None:
         log(f"Failed to update meeting status for {meeting_id}: {exc}")
 
 
-def handle_job(job_id: str, meeting_id: str, attempt: int) -> None:
+def handle_job(
+    job_id: str,
+    meeting_id: str,
+    attempt: int,
+    summary_api_url: str | None = None,
+    summary_model: str | None = None,
+    summary_api_key: str | None = None,
+) -> None:
     set_job_status_safe(
         job_id,
         status="running",
@@ -75,7 +82,18 @@ def handle_job(job_id: str, meeting_id: str, attempt: int) -> None:
         message="正在向遠端模型產生摘要與 TODO",
         attempt=attempt,
     )
-    summary_raw, todos_raw = summarize_and_extract_todos(segments, settings)
+    runtime_settings = settings.model_copy(
+        update={
+            key: value
+            for key, value in {
+                "ollama_base_url": summary_api_url.strip() if summary_api_url else None,
+                "ollama_model": summary_model.strip() if summary_model else None,
+                "ollama_api_key": summary_api_key.strip() if summary_api_key else None,
+            }.items()
+            if value
+        }
+    )
+    summary_raw, todos_raw = summarize_and_extract_todos(segments, runtime_settings)
     summary = SummaryModel(**summary_raw)
     todos = [TodoItem(**todo) for todo in todos_raw]
 
@@ -127,9 +145,19 @@ def run() -> None:
         job_id = payload["job_id"]
         meeting_id = payload["meeting_id"]
         attempt = int(payload.get("attempt", 0))
+        summary_api_url = payload.get("summary_api_url")
+        summary_model = payload.get("summary_model")
+        summary_api_key = payload.get("summary_api_key")
 
         try:
-            handle_job(job_id=job_id, meeting_id=meeting_id, attempt=attempt)
+            handle_job(
+                job_id=job_id,
+                meeting_id=meeting_id,
+                attempt=attempt,
+                summary_api_url=summary_api_url,
+                summary_model=summary_model,
+                summary_api_key=summary_api_key,
+            )
             log(f"Job {job_id} finished")
         except Exception as exc:  # pragma: no cover - runtime path
             log(f"Job {job_id} failed: {exc}")
@@ -145,7 +173,14 @@ def run() -> None:
                     attempt=next_attempt,
                 )
                 try:
-                    queue.enqueue_existing(job_id=job_id, meeting_id=meeting_id, attempt=next_attempt)
+                    queue.enqueue_existing(
+                        job_id=job_id,
+                        meeting_id=meeting_id,
+                        attempt=next_attempt,
+                        summary_api_url=summary_api_url,
+                        summary_model=summary_model,
+                        summary_api_key=summary_api_key,
+                    )
                 except Exception as enqueue_exc:  # pragma: no cover - runtime path
                     log(f"Failed to requeue job {job_id}: {enqueue_exc}")
                     mark_meeting_status_safe(meeting_id, "error")

@@ -14,6 +14,7 @@ from app.schemas import (
     JobStatusResponse,
     MeetingCreateRequest,
     MeetingListItem,
+    ProcessRequest,
     MeetingResponse,
     MeetingResultResponse,
     ProcessResponse,
@@ -191,7 +192,7 @@ async def finish_recording(meeting_id: str, file: UploadFile = File(...)) -> dic
 
 
 @app.post("/api/v1/meetings/{meeting_id}/process", response_model=ProcessResponse)
-def process_meeting(meeting_id: str) -> dict:
+def process_meeting(meeting_id: str, payload: ProcessRequest | None = None) -> dict:
     ensure_meeting_exists(meeting_id)
 
     try:
@@ -200,7 +201,15 @@ def process_meeting(meeting_id: str) -> dict:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="recording file not found") from exc
 
     store.mark_status(meeting_id, "processing")
-    job = queue.create_job(meeting_id)
+    summary_api_url = payload.summary_api_url.strip() if payload and payload.summary_api_url else None
+    summary_model = payload.summary_model.strip() if payload and payload.summary_model else None
+    summary_api_key = payload.summary_api_key.strip() if payload and payload.summary_api_key else None
+    job = queue.create_job(
+        meeting_id,
+        summary_api_url=summary_api_url,
+        summary_model=summary_model,
+        summary_api_key=summary_api_key,
+    )
 
     return {"meeting_id": meeting_id, "job_id": job["job_id"], "status": job["status"]}
 

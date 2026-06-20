@@ -46,6 +46,12 @@ class ProcessResponse(BaseModel):
     status: str
 
 
+class ProcessRequest(BaseModel):
+    summary_api_url: str | None = Field(default=None, max_length=1000)
+    summary_model: str | None = Field(default=None, max_length=200)
+    summary_api_key: str | None = Field(default=None, max_length=2000)
+
+
 class JobStatusResponse(BaseModel):
     job_id: str
     meeting_id: str
