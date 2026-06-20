@@ -1,28 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import HealthBar from "./components/HealthBar";
-import RecordingControls from "./components/RecordingControls";
-import MeetingList from "./components/MeetingList";
-import MeetingDetail from "./components/MeetingDetail";
+import { useEffect, useRef, useState } from "react";
+import {
+  createMeeting,
+  finishMeetingRecording,
+  getJobStatus,
+  processMeeting,
+  startMeetingRecording,
+} from "@/lib/api";
+import type { JobStatus, SummaryApiSettings, UploadPhase } from "@/types";
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 const POLL_INITIAL_MS = 2000;
 const POLL_MAX_MS = 10000;
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, { cache: "no-store", ...options });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `HTTP ${response.status}`);
-  }
-  return response.json();
-}
+type UseMeetingRecorderOptions = {
+  meetingTitle: string;
+  uiError: string;
+  setUiError: (message: string) => void;
+  summaryApiSettings: SummaryApiSettings;
+  refreshMeetings: () => Promise<void>;
+  loadMeetingResult: (meetingId: string) => Promise<void>;
+  selectPendingMeeting: (meetingId: string) => void;
+};
 
-function toCaptureErrorMessage(error) {
+function toCaptureErrorMessage(error: unknown) {
   if (!error) return "未知的錄音錯誤";
 
-  const name = error.name || "";
+  const name = error instanceof DOMException || error instanceof Error ? error.name : "";
   if (name === "NotAllowedError") return "你拒絕了權限，請允許麥克風與螢幕分享音訊後重試。";
   if (name === "NotFoundError") return "找不到可用麥克風裝置。";
   if (name === "AbortError") return "螢幕分享流程被中斷，請重新操作。";
@@ -36,64 +40,28 @@ function isChromiumBrowser() {
   return /Chrome|Chromium|Edg\//.test(navigator.userAgent || "");
 }
 
-export default function HomePage() {
-  const [health, setHealth] = useState({ status: "loading", detail: "Checking API..." });
-  const [meetings, setMeetings] = useState([]);
-  const [meetingTitle, setMeetingTitle] = useState("");
-  const [currentMeetingId, setCurrentMeetingId] = useState(null);
-  const [currentJobId, setCurrentJobId] = useState(null);
-  const [jobStatus, setJobStatus] = useState(null);
+export function useMeetingRecorder({
+  meetingTitle,
+  uiError,
+  setUiError,
+  summaryApiSettings,
+  refreshMeetings,
+  loadMeetingResult,
+  selectPendingMeeting,
+}: UseMeetingRecorderOptions) {
+  const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [uploadPhase, setUploadPhase] = useState(null);
-  const [uiError, setUiError] = useState("");
-  const [loadError, setLoadError] = useState(null);
-  const [selectedMeetingId, setSelectedMeetingId] = useState(null);
-  const [result, setResult] = useState(null);
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>(null);
 
-  const recorderRef = useRef(null);
-  const micStreamRef = useRef(null);
-  const displayStreamRef = useRef(null);
-  const mixedStreamRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const chunksRef = useRef([]);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const displayStreamRef = useRef<MediaStream | null>(null);
+  const mixedStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
-  const selectedMeeting = useMemo(
-    () => meetings.find((m) => m.meeting_id === selectedMeetingId) || null,
-    [meetings, selectedMeetingId],
-  );
-
-  const refreshMeetings = async () => {
-    const data = await fetchJson(`${apiBase}/api/v1/meetings?limit=50`);
-    setMeetings(data);
-  };
-
-  const loadMeetingResult = async (meetingId) => {
-    const data = await fetchJson(`${apiBase}/api/v1/meetings/${meetingId}/result`);
-    setSelectedMeetingId(meetingId);
-    setResult(data);
-  };
-
-  // #5: retry mechanism — bootstrap can be re-invoked on failure
-  const bootstrap = async () => {
-    setLoadError(null);
-    try {
-      const ready = await fetchJson(`${apiBase}/health/ready`);
-      setHealth(ready.status === "ok" ? { status: "ok", detail: "API ready" } : { status: "error", detail: "API degraded" });
-    } catch (error) {
-      setHealth({ status: "error", detail: `Cannot reach API (${String(error)})` });
-      setLoadError("無法連線到 API，請確認服務是否已啟動。");
-      return;
-    }
-    try {
-      await refreshMeetings();
-    } catch (error) {
-      setLoadError(`無法載入會議列表：${String(error)}`);
-    }
-  };
-
-  useEffect(() => { bootstrap(); }, []);
-
-  // #4: polling with exponential backoff
   useEffect(() => {
     if (!currentJobId) return undefined;
 
@@ -103,11 +71,11 @@ export default function HomePage() {
     const poll = async () => {
       if (cancelled) return;
       try {
-        const data = await fetchJson(`${apiBase}/api/v1/jobs/${currentJobId}`);
+        const data = await getJobStatus(currentJobId);
         if (cancelled) return;
         setJobStatus(data);
 
-        if (data.status === "done") {
+        if (data.status === "done" && data.meeting_id) {
           await refreshMeetings();
           await loadMeetingResult(data.meeting_id);
           setCurrentJobId(null);
@@ -165,20 +133,15 @@ export default function HomePage() {
 
   useEffect(() => { return () => { releaseRecorderResources(); }; }, []);
 
-  // #6: upload progress phase
-  const uploadAndProcess = async (meetingId, blob) => {
+  const uploadAndProcess = async (meetingId: string, blob: Blob) => {
     setUploadPhase("uploading");
-    const formData = new FormData();
-    formData.append("file", blob, "recording.webm");
-
-    await fetchJson(`${apiBase}/api/v1/meetings/${meetingId}/recording/finish`, {
-      method: "POST",
-      body: formData,
-    });
+    await finishMeetingRecording(meetingId, blob);
 
     setUploadPhase("processing");
-    const processResponse = await fetchJson(`${apiBase}/api/v1/meetings/${meetingId}/process`, {
-      method: "POST",
+    const processResponse = await processMeeting(meetingId, {
+      summaryApiUrl: summaryApiSettings.apiUrl,
+      summaryModel: summaryApiSettings.model,
+      summaryApiKey: summaryApiSettings.apiKey,
     });
 
     setCurrentJobId(processResponse.job_id);
@@ -192,7 +155,7 @@ export default function HomePage() {
     if (recorder && recorder.state !== "inactive") recorder.stop();
   };
 
-  const prepareMixedStream = async () => {
+  const prepareMixedStream = async (): Promise<MediaStream> => {
     if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("你的瀏覽器不支援這個錄音模式，請使用桌面 Chrome 或 Edge。");
     }
@@ -201,7 +164,7 @@ export default function HomePage() {
       audio: { echoCancellation: true, noiseSuppression: true },
     });
 
-    let displayStream;
+    let displayStream: MediaStream;
     try {
       displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     } catch (error) {
@@ -216,7 +179,9 @@ export default function HomePage() {
       throw new Error("未偵測到系統音訊。請在分享視窗勾選「分享音訊」後重試。");
     }
 
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) {
       displayStream.getTracks().forEach((t) => t.stop());
       micStream.getTracks().forEach((t) => t.stop());
@@ -246,7 +211,6 @@ export default function HomePage() {
     return destination.stream;
   };
 
-  // #3: get permissions BEFORE creating meeting (avoids orphan meetings)
   const startRecording = async () => {
     setUiError("");
     if (!isChromiumBrowser()) {
@@ -261,16 +225,8 @@ export default function HomePage() {
 
     try {
       const mixedStream = await prepareMixedStream();
-
-      const meeting = await fetchJson(`${apiBase}/api/v1/meetings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, language: "zh-TW" }),
-      });
-
-      await fetchJson(`${apiBase}/api/v1/meetings/${meeting.meeting_id}/recording/start`, {
-        method: "POST",
-      });
+      const meeting = await createMeeting(title);
+      await startMeetingRecording(meeting.meeting_id);
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
@@ -282,7 +238,7 @@ export default function HomePage() {
       recorderRef.current = recorder;
       chunksRef.current = [];
 
-      recorder.ondataavailable = (e) => {
+      recorder.ondataavailable = (e: BlobEvent) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
 
@@ -298,8 +254,7 @@ export default function HomePage() {
 
       recorder.start(1000);
       setCurrentMeetingId(meeting.meeting_id);
-      setSelectedMeetingId(meeting.meeting_id);
-      setResult(null);
+      selectPendingMeeting(meeting.meeting_id);
       setIsRecording(true);
       await refreshMeetings();
     } catch (error) {
@@ -308,72 +263,15 @@ export default function HomePage() {
     }
   };
 
-  // #2: patchTodo no longer calls refreshMeetings
-  const patchTodo = async (todoId, patch) => {
-    if (!selectedMeetingId) return;
-    try {
-      const updated = await fetchJson(`${apiBase}/api/v1/meetings/${selectedMeetingId}/todos/${todoId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      setResult((prev) => {
-        if (!prev) return prev;
-        return { ...prev, todos: prev.todos.map((t) => (t.id === todoId ? updated : t)) };
-      });
-    } catch (error) {
-      setUiError(`更新 TODO 失敗：${String(error)}`);
-    }
+  return {
+    currentMeetingId,
+    currentJobId,
+    jobStatus,
+    isRecording,
+    uploadPhase,
+    uiError,
+    setUiError,
+    startRecording,
+    stopRecording,
   };
-
-  return (
-    <main className="page">
-      <section className="card">
-        <h1>Meeting Notes (Post-Meeting)</h1>
-        <p>錄音後才生成摘要與 TODO，不提供即時字幕。</p>
-
-        <HealthBar health={health} />
-
-        {loadError && (
-          <p className="error" role="alert" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            {loadError}
-            <button className="btn btn-primary" onClick={bootstrap} style={{ fontSize: "0.85rem" }}>
-              重試
-            </button>
-          </p>
-        )}
-
-        <div className="capture-guide">
-          需要同時授權「麥克風」與「分享音訊」。請使用桌面 Chrome/Edge，分享畫面時務必勾選音訊。
-        </div>
-
-        <RecordingControls
-          isRecording={isRecording}
-          currentJobId={currentJobId}
-          jobStatus={jobStatus}
-          meetingTitle={meetingTitle}
-          uploadPhase={uploadPhase}
-          uiError={uiError}
-          onStart={startRecording}
-          onStop={stopRecording}
-          onTitleChange={setMeetingTitle}
-        />
-      </section>
-
-      <section className="card split">
-        <MeetingList
-          meetings={meetings}
-          selectedMeetingId={selectedMeetingId}
-          onSelect={loadMeetingResult}
-        />
-        <MeetingDetail
-          meeting={selectedMeeting}
-          result={result}
-          onPatchTodo={patchTodo}
-        />
-      </section>
-
-      {currentMeetingId && <p className="footer-note">目前會議 ID: {currentMeetingId}</p>}
-    </main>
-  );
 }

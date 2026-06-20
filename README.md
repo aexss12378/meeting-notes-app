@@ -20,7 +20,7 @@ The frontend only shows the final summary and TODO list. Internal transcript and
 
 | Component | Role |
 | --- | --- |
-| `web` | Next.js frontend on port `3000` |
+| `frontend` | Next.js app on port `3000` |
 | `api` | FastAPI backend on port `8000` |
 | `worker` | Background processing for ASR and summarization |
 | `redis` | Job queue and status store |
@@ -182,5 +182,6 @@ The frontend only reads `summary.json` and `todos.json` through the API.
 ## Development Notes
 
 - Python dependencies are managed with `uv`
+- The Next.js app lives at the repository root, with routes under `src/app`
 - The API package definition lives in [`/Users/chenqien/Documents/會議記錄應用/api/pyproject.toml`](/Users/chenqien/Documents/會議記錄應用/api/pyproject.toml)
 - Docker Compose is the default local runtime

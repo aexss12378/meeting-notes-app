@@ -1,6 +1,14 @@
 "use client";
 
-export default function MeetingDetail({ meeting, result, onPatchTodo }) {
+import type { Meeting, MeetingResult, TodoPatch } from "@/types";
+
+type MeetingDetailProps = {
+  meeting: Meeting | null;
+  result: MeetingResult | null;
+  onPatchTodo: (todoId: string, patch: TodoPatch) => void;
+};
+
+export default function MeetingDetail({ meeting, result, onPatchTodo }: MeetingDetailProps) {
   if (!meeting) {
     return (
       <div>
