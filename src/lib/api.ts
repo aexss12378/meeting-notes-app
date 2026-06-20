@@ -1,6 +1,6 @@
 import type { HealthStatus, JobStatus, Meeting, MeetingResult, Todo, TodoPatch } from "@/types";
 
-const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+const apiBase = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 type CreateMeetingResponse = Pick<Meeting, "meeting_id">;
 

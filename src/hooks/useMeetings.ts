@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
 import { getMeetingResult, getReadyStatus, listMeetings, updateTodo } from "@/lib/api";
 import type { HealthStatus, Meeting, MeetingResult, TodoPatch } from "@/types";
