@@ -7,8 +7,10 @@ dist
 .next
 
 api/__pycache__
+**/__pycache__/
 api/.pytest_cache
 api/.venv
+api/uv.lock
 
 *.log
 data

@@ -1,6 +1,6 @@
 COMPOSE=docker compose --project-name meeting_notes
 
-.PHONY: up down logs ps rebuild reset smoke
+.PHONY: up down logs ps rebuild reset smoke open-app
 
 up:
 	$(COMPOSE) up -d --build
@@ -23,3 +23,6 @@ reset:
 smoke:
 	curl -fsS http://localhost:8000/health/live
 	curl -fsS http://localhost:8000/health/ready
+
+open-app:
+	./scripts/open-app.sh
